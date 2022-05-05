@@ -1,0 +1,16 @@
+#Inventario de execução
+[all:vars]
+ansible_user=ansible #Tenha certeza que o usuario esta criado no template com permissões de sudo
+ansible_password=
+
+#Abaixo defina os hostnames, ips e datastore
+[master]
+master01 ansible_host=192.168.0.10 datastore=DS_SSD_01
+
+[workers]
+worker01 ansible_host=192.168.0.20 datastore=DS_SSD_02
+worker02 ansible_host=192.168.0.30 datastore=DS_SSD_03
+
+[cluster:children]
+master
+workers
