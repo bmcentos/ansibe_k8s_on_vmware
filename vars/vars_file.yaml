@@ -1,0 +1,21 @@
+####Definições VM
+vcenter_hostname: vcentername
+username: vcenter_user
+folder: vm/ 
+vmtemplate: TEMPLATE_CENTOS
+vmcluster: CLUSTER_VMWARE
+net_name: PORTGROUP
+vm_gw: 192.168.0.1
+datacenter: DC_CLUSTER
+vram: 8000 #qtd. memoria da vm Em MB
+vcpus: 4 
+gb_disk: 10 #Tamanho em GB do disco secundario adicionado
+
+
+####Definições K8s
+version: 1.21.11 #Versão do kubernetes
+cri_version: 1.6.2    #Versão do containerd
+http_proxy: http://proxy.example.com
+ip_range:  192.168.0.15-192.168.0.20              #Range de ips que ficarão disponiveis para uso externo )LB)
+registry: internal-registry.example.com                #Registro de imagem
+
