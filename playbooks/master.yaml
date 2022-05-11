@@ -1,0 +1,128 @@
+- name: Preparando master node e iniciando o cluster
+  hosts: master
+  become: yes
+  vars_files:
+    - ../vars/vars_file.yaml
+  tasks:
+    - name: Copiando manifestos flannel metalLb ingress
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: ../files/cni.yaml, dest: /tmp/cni.yaml }
+        - { src: ../files/metallb.yaml, dest: /tmp/metallb.yaml }
+        - { src: ../files/internet-ingress.yaml, dest: /tmp/internet-ingress.yaml }
+        - { src: ../files/metrics-server.yaml, dest: /tmp/metrics-server.yaml }
+      delegate_to:  "{{ groups['master'][0] }}"
+
+    - name: Copiando configMap MetalLb
+      template:
+        src: ../templates/cm_metallb.yaml.j2
+        dest: /tmp/cm_metallb.yaml
+      delegate_to:  "{{ groups['master'][0] }}"
+
+    - name: Inicindo cluster Single master
+      command: kubeadm init --pod-network-cidr=10.244.0.0/16
+      run_once: yes
+      args:
+        chdir: $HOME
+        creates: cluster_initialized.txt
+      when:  lb_enabled | lower  == "no" or lb_enabled| lower  == "false"
+
+    - name: Inicindo cluster Multi Master
+      shell: kubeadm init --control-plane-endpoint {{ lb_vip }}:6443 --upload-certs --pod-network-cidr=10.244.0.0/16 > /root/join.txt
+      run_once: yes
+      args:
+        chdir: $HOME
+        creates: cluster_initialized.txt
+      delegate_to:  "{{ groups['master'][0] }}"
+      when: lb_enabled |lower  == "yes" or lb_enabled| lower  == "true"
+
+
+    - name: Criando path .kube
+      file:
+        path: /root/.kube
+        state: directory
+        mode: 0755
+
+    - name: Copia kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+      delegate_to:  "{{ groups['master'][0] }}"
+
+    - name: Instalando CNI, MetalLb e Ingress controller, Metrics Server
+      shell: "{{ item }}" 
+      loop:
+        - kubectl apply -f /tmp/cni.yaml
+        - kubectl apply -f /tmp/cm_metallb.yaml
+        - kubectl apply -f /tmp/metallb.yaml
+        - kubectl apply -f /tmp/metrics-server.yaml
+        - kubectl apply -f /tmp/internet-ingress.yaml
+      run_once: yes
+      args:
+        chdir: $HOME
+        
+    - name: Coletando kube join para os workers
+      shell:  grep -A4 "You can now join any number" /root/join.txt | tail -3| sed 's/\\//g'| tr -d '\n'
+      register: kubernetes_join_command_masters
+      when:  lb_enabled |lower  == "yes" or lb_enabled| lower  == "true"
+      delegate_to:  "{{ groups['master'][0] }}"
+
+
+    - name: Coletando kube join para os workers
+      shell: kubeadm token create  --print-join-command
+      register: kubernetes_join_command
+      delegate_to:  "{{ groups['master'][0] }}"
+
+    - name: Comando de Join Workers
+      debug:
+        msg: "{{ kubernetes_join_command.stdout }}"
+
+    - name: Comando de Join Masters
+      debug:
+        msg: "{{ kubernetes_join_command_masters.stdout }}"
+      when:  lb_enabled |lower  == "yes" or lb_enabled| lower  == "true"
+
+
+    - name: Copiando Join Workers para tmp local
+      local_action: copy content="{{ kubernetes_join_command.stdout_lines[0] }}" dest="/tmp/kubernetes_join_command" mode=0777
+      run_once: yes
+    
+    - name: Copiando Join Masters para tmp local
+      local_action: copy content="{{ kubernetes_join_command_masters.stdout_lines[0] }}" dest="/tmp/kubernetes_join_command_masters" mode=0777
+      when:  lb_enabled| lower  == "yes" or lb_enabled| lower  == "true"
+      run_once: yes
+
+
+    - name: Copia o comando de Kube join para os Masters - {{ inventory_hostname }}
+      copy:
+        src: /tmp/kubernetes_join_command_masters
+        dest: /tmp/kubernetes_join_command_masters
+        mode: 0777  
+      when: inventory_hostname != play_hosts[0]
+
+
+    - name: Criando path .kube
+      file:
+        path: /root/.kube
+        state: directory
+        mode: 0755
+
+
+    - name: Join dos Master nodes 
+      become: yes
+      command: sh /tmp/kubernetes_join_command_masters
+      register: joined_or_not
+      when: inventory_hostname !=  groups['master'][0] and lb_enabled| lower  == "yes" or lb_enabled| lower  == "true"
+      ignore_errors: yes
+
+    - name: Copia kubeconfig
+      copy:
+        src: /etc/kubernetes/admin.conf
+        dest: /root/.kube/config
+        remote_src: yes
+      when: inventory_hostname !=  groups['master'][0] and lb_enabled| lower  == "yes" or lb_enabled| lower  == "true"
+
+

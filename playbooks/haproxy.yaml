@@ -1,0 +1,132 @@
+- name: Criando servidores Load balancer - VIP {{ lb_vip }}
+  hosts: lb
+  gather_facts: false
+  become: yes
+  vars_files: 
+    - ../vars/vars_file.yaml
+  tasks: 
+  - name: Criando servidores virtuais para os Load balancer 
+    community.vmware.vmware_guest:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ username }}"
+      password: "{{ password }}"
+      validate_certs: no      
+      folder: "{{ folder }}"
+      template: "{{ vmtemplate }}"
+      name: "{{ item.vm_name | upper }}"
+      cluster: "{{ vmcluster }}"
+      datacenter: "{{ datacenter }}"
+      datastore: "{{ item.datastore }}"
+      hardware:
+        memory_mb: "{{ rancher_vram }}"
+        num_cpus: "{{ rancher_vcpus }}"
+        num_cpu_cores_per_socket: 1
+        scsi: paravirtual
+        hotadd_cpu: True
+        hotremove_cpu: True
+        hotadd_memory: True
+      networks:
+      - name: "{{ net_name }}"
+        ip: "{{ item.vm_ip }}"
+        netmask: 255.255.255.0
+        gateway: "{{ vm_gw }}"
+        type: static
+        dns_servers: 172.16.32.7
+        start_connected: yes
+      wait_for_ip_address: yes
+      customization:
+        hostname: "{{ item.vm_name | lower }}"
+        domain: "{{ domain }}"
+        dns_servers:
+        - 8.8.8.8
+      state: poweredon
+    delegate_to: localhost
+    loop:
+      -  { datastore: '{{ datastore }}', vm_name: '{{ inventory_hostname }}',  server: '{{ inventory_hostname }}', vm_ip: '{{ ansible_host }}' }
+
+
+  - name: Testando conectividade da VM
+    shell: ping -c4 "{{ item.vm_name }}"
+    register: ping
+    loop:
+      -  {  vm_name: '{{ ansible_host }}' }
+    delegate_to: localhost
+
+  - name: Aguardando o ssh ficar disponivel - {{ inventory_hostname }}
+    local_action: wait_for host={{ ansible_host }} port=22
+      state=started delay=5 timeout=600
+    retries: 10
+    delay: 10
+
+
+  - name: Registra servidor no satellite - {{ inventory_hostname }}
+    shell: "{{ item }}"
+    loop:
+      - curl -sS {{ satellite_rhsm }} | tee /etc/rhsm/rhsm.conf
+        #      - subscription-manager register --org="{{ satellite_org }}" --activationkey="{{ satellite_key }}" --force
+      - subscription-manager register --org="{{ satellite_org }}" --activationkey="{{ satellite_key_lb }}" --force
+      - subscription-manager repos --enable '*'
+      - subscription-manager release --set {{ satellite_release | default('8') }}
+      - subscription-manager subscribe --auto
+      - subscription-manager attach --auto
+    async: 1000
+    when:  satellite_enabled| lower  == "yes" or satellite_enabled| lower  == "true"
+
+
+  - name: Instalando o keepalived e haproxy
+    yum:
+      name: 
+        - haproxy
+        - keepalived
+        - yum-utils
+      state: latest
+
+  - name: Copiando arquivos de configuração
+    template: 
+      src: "{{ item.src }}"
+      dest: "{{ item.dest }}"
+    loop:
+      - { src: ../templates/haproxy.cfg.j2, dest: /etc/haproxy/haproxy.cfg }
+      - { src: ../templates/keepalived.conf.j2, dest: /etc/keepalived/keepalived.conf }
+
+
+  - name: Habilitando e iniciando serviço Docker
+    systemd:
+      name: "{{ item }}"
+      state: started
+      enabled: yes
+      daemon_reload: yes
+    loop:
+      - haproxy
+      - keepalived
+    become: yes
+
+
+  - name: Criando arquivo para parametrizar o kernel para uso do Haproxy
+    file:
+      path: "/etc/sysctl.d/haproxy.conf"
+      state: "touch"
+
+  - name: Ajustando parametros do kernel 
+    blockinfile:
+      path: "/etc/sysctl.d/haproxy.conf"
+      block: |
+              net.ipv4.ip_forward = 1
+
+  - name: Aplicando parametros de kernel
+    command: sysctl --system
+
+  - name: Validando comunicação na porta 6443
+    wait_for: 
+      host: "{{ ansible_host }}"
+      port: 6443
+      timeout: 1
+  - debug: msg=ok
+  
+
+
+
+
+
+
+...

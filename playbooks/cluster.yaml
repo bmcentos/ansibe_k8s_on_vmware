@@ -1,0 +1,182 @@
+---
+- name: Aplicando configurações para as maquinas do cluster kubernetes - {{ cluster_name }}
+  hosts: cluster
+  become: yes
+  gather_facts: yes
+  vars_files:
+    - ../vars/vars_file.yaml
+
+  tasks:
+    - name: Criando arquivo de modulos para CRI
+      file:
+        path: "/etc/modules-load.d/containerd.conf"
+        state: "touch"
+
+    - name: Adicionando modulos para o CRI
+      blockinfile:
+        path: "/etc/modules-load.d/containerd.conf"
+        block: |
+               overlay
+               br_netfilter
+               ip_vs_rr
+               ip_vs_wrr
+               ip_vs_sh
+               nf_conntrack
+               ip_vs
+
+
+    - name: Carregando os modulos necessarios
+      shell: |
+              modprobe overlay
+              modprobe br_netfilter
+
+
+    - name: Criando arquivo para parametrizar o kernel para uso do k8s
+      file:
+        path: "/etc/sysctl.d/99-kubernetes-cri.conf"
+        state: "touch"
+
+    - name: Ajustando parametros do kernel para o Kubernetes
+      blockinfile:
+        path: "/etc/sysctl.d/99-kubernetes-cri.conf"
+        block: |
+                net.bridge.bridge-nf-call-iptables = 1
+                net.ipv4.ip_forward = 1
+                net.bridge.bridge-nf-call-ip6tables = 1
+
+    - name: Aplicando parametros de kernel
+      command: sysctl --system
+
+    - name: Criando diretorio do containerd
+      shell: |
+               mkdir -p /etc/containerd
+
+    - name: "Copiando script de Instalação do containerd"
+      template:
+        src: ../templates/containerdInstall.sh.j2
+        dest: /tmp/containerdInstall.sh
+        force: yes
+
+    - name: "Instalando o containerd"
+      shell: sh /tmp/containerdInstall.sh | tee -a /root/updateContainerd.log
+      register: resultado
+
+    - debug:
+        msg: "{{ resultado.stdout_lines }}"
+
+    - name: disable swap
+      shell: |
+               swapoff -a
+               sed -i '/ swap / s/^\(.*\)$/#\1/g' /etc/fstab
+
+    - name: Instalando pacotes necessarios
+      yum:
+        name:
+          - curl
+          - device-mapper-persistent-data
+          - lvm2
+          - kernel-devel-{{ansible_kernel}}
+          - iscsi-initiator-utils
+          - nfs-utils
+          - yum utils
+          - git
+        state: present
+
+
+    - name: Copiando arquivos /tmp/cm-metallb.yaml /etc/systemd/system/containerd.service /etc/yum.conf
+      template: 
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+        force: yes
+      loop:
+        - { src: ../templates/containerd.service.j2, dest: /etc/systemd/system/containerd.service }
+        - { src: ../templates/yum.conf.j2, dest: /etc/yum.conf }
+        - { src: ../templates/config.toml.j2, dest: /etc/containerd/config.toml }
+
+
+    - name: Copiando arquivos kubernetes.repo metrics-server.yam
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: ../files/kubernetes.repo, dest: /etc/yum.repos.d/kubernetes.repo }
+        - { src: ../files/crictl.yaml, dest: /etc/crictl.yaml }
+
+    - name: Resetando kubeadm caso exista
+      shell: kubeadm reset -f
+      ignore_errors: True
+
+    - name: Removendo pacotes kubernetes
+      yum:
+        name:
+          - kubelet-{{ version }}-0
+          - kubeadm-{{ version }}-0
+          - kubectl-{{ version }}-0
+        state: absent
+      ignore_errors: True
+
+
+    - name: Instalando kubectl kubeadm kubelet
+      yum:
+        name:
+          - kubelet-{{ version }}-0
+          - kubeadm-{{ version }}-0
+          - kubectl-{{ version }}-0
+        state: present
+      environment:
+        - https_proxy: "{{ http_proxy }}"
+        - http_proxy: "{{ http_proxy }}"
+
+    - name: Copiando arquivos  10-flannel.conflist kubelet.service
+      copy:
+        src: "{{ item.src }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { src: ../files/kubelet.service, dest: /usr/lib/systemd/system/kubelet.service }
+
+
+    - name: Habilitando bash completion
+      shell: |
+              #              yum install -y kubelet=.{{ version }}-0 kubeadm={{ version }}-00 kubectl={{ version }}-0
+              echo 'source <(kubectl completion bash)' >>~/.bashrc
+              kubectl completion bash >/etc/bash_completion.d/kubectl
+
+    - name: Habilitando serviços containerd e kubelet 
+      systemd:
+        name: "{{ item }}"
+        enabled: yes
+        state: restarted
+        daemon_reload: yes
+      loop:
+        - containerd
+        - kubelet
+        - iscsid
+
+    - name: Clonando os repositorios para instalação do Go e Nerdctl - Docker friendly CLI
+      git:
+        repo: "{{ item.repo }}"
+        dest: "{{ item.dest }}"
+      loop:
+        - { repo: https://github.com/udhos/update-golang.git, dest: /tmp/golang }
+        - { repo: https://github.com/containerd/nerdctl.git, dest: /tmp/nerdctl }
+      environment:
+        - https_proxy: "{{ http_proxy }}"
+        - http_proxy: "{{ http_proxy }}"
+
+    - name: Intalando nerdctl no master node
+      shell: "{{ item }}"
+      loop:
+        - cd /tmp/golang && sh update-golang.sh
+        - ln -sf /usr/local/go/bin/go /usr/local/bin/go
+        - cd /tmp/nerdctl && make && make install
+      environment:
+        - https_proxy: "{{ http_proxy }}"
+        - http_proxy: "{{ http_proxy }}"
+
+    - name: Reiniciando servidores do cluster
+      reboot:
+        post_reboot_delay: 10
+        reboot_timeout: 40
+        connect_timeout: 60
+        test_command: uptime
+...

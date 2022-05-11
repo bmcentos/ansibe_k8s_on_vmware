@@ -1,0 +1,275 @@
+- name: Criando servidor Rancher 
+  hosts: rancher
+  gather_facts: false
+  become: yes
+  vars_files: 
+    - ../vars/vars_file.yaml
+  vars:
+    rancher_path: "{{ rancher_path | default('/var/lib/docker/rancher') }}"
+  tasks: 
+  - name: Criando servidores virtuais para o Rancher
+    community.vmware.vmware_guest:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ username }}"
+      password: "{{ password }}"
+      validate_certs: no      
+      folder: "{{ folder }}"
+      template: "{{ vmtemplate }}"
+      name: "{{ item.vm_name | upper }}"
+      cluster: "{{ vmcluster }}"
+      datacenter: "{{ datacenter }}"
+      datastore: "{{ item.datastore }}"
+      disk:
+        - size_gb: 90
+          type: thin
+          datastore: "{{ item.datastore }}"
+      hardware:
+        memory_mb: "{{ rancher_vram }}"
+        num_cpus: "{{ rancher_vcpus }}"
+        num_cpu_cores_per_socket: 1
+        scsi: paravirtual
+        hotadd_cpu: True
+        hotremove_cpu: True
+        hotadd_memory: True
+      networks:
+      - name: "{{ net_name }}"
+        ip: "{{ item.vm_ip }}"
+        netmask: 255.255.255.0
+        gateway: "{{ vm_gw }}"
+        type: static
+        dns_servers: 172.16.32.7
+        start_connected: yes
+      wait_for_ip_address: yes
+      customization:
+        hostname: "{{ item.vm_name | lower }}"
+        domain: "{{ domain }}"
+        dns_servers:
+        - 8.8.8.8
+      state: poweredon
+    delegate_to: localhost
+    loop:
+      -  { datastore: '{{ datastore }}', vm_name: '{{ inventory_hostname }}',  server: '{{ inventory_hostname }}', vm_ip: '{{ ansible_host }}' }
+
+  - name: Atachando disco na VM Rancher
+    vmware_guest_disk:
+      hostname: "{{ vcenter_hostname }}"
+      username: "{{ username }}"
+      password: "{{ password }}"
+      validate_certs: no
+      datacenter: "{{ datacenter }}"
+      name: "{{ item.vm_name | upper }}"
+      disk:
+      - size_gb: "{{ rancher_gb_disk }}"
+        datastore: "{{ item.datastore }}"
+        type: thin
+        state: present
+        scsi_controller: 2
+        unit_number: 2
+        scsi_type: 'paravirtual'
+        disk_mode: 'persistent'
+    delegate_to: localhost
+    loop:
+      -  { datastore: '{{ datastore }}', vm_name: '{{ inventory_hostname }}' }
+
+
+  - name: Testando conectividade da VM
+    shell: ping -c4 "{{ item.vm_name }}"
+    register: ping
+    loop:
+      -  {  vm_name: '{{ ansible_host }}' }
+    delegate_to: localhost
+
+  - name: Aguardando o ssh ficar disponivel - {{ inventory_hostname }}
+    local_action: wait_for host={{ ansible_host }} port=22
+      state=started delay=5 timeout=600
+    retries: 10
+    delay: 10
+
+
+  - name: Registra servidor no satellite - {{ inventory_hostname }}
+    shell: "{{ item }}"
+    loop:
+      - curl -sS {{ satellite_rhsm }} | tee /etc/rhsm/rhsm.conf
+      - subscription-manager register --org="{{ satellite_org }}" --activationkey="{{ satellite_key }}" --force
+      - subscription-manager repos --enable '*'
+      - subscription-manager release --set {{ satellite_release | default('8') }}
+      - subscription-manager subscribe --auto
+      - subscription-manager attach --auto
+    async: 1000
+    when:  satellite_enabled| lower  == "yes" or satellite_enabled| lower  == "true"
+
+
+  - name: Instalando device-mapper-persistent-data
+    yum:
+      name: 
+        - jq
+        - device-mapper-persistent-data
+        - lvm2
+        - yum-utils
+      state: latest
+
+  - name: Adiciona repositorio docker
+    get_url:
+      url: https://download.docker.com/linux/centos/docker-ce.repo
+      dest: /etc/yum.repos.d/docer-ce.repo
+    environment:
+      - https_proxy: "{{ http_proxy }}"
+      - http_proxy: "{{ http_proxy }}"
+
+  - name: Enable Docker Edge repo
+    ini_file:
+      dest: /etc/yum.repos.d/docer-ce.repo
+      section: 'docker-ce-edge'
+      option: enabled
+      value: 0
+
+  - name: Enable Docker Test repo
+    ini_file:
+      dest: /etc/yum.repos.d/docer-ce.repo
+      section: 'docker-ce-test'
+      option: enabled
+      value: 0
+
+  - name: Install Docker
+    package:
+      name: docker-ce
+      state: latest
+    environment:
+      - https_proxy: "{{ http_proxy }}"
+      - http_proxy: "{{ http_proxy }}"
+
+  - name: Criando diretorio para systemd docker
+    file:
+      path: /etc/systemd/system/docker.service.d
+      state: directory
+
+  - name: Habilitando http proxy no docker
+    template:
+      src: ../templates/docker-http-proxy.conf.j2
+      dest: /etc/systemd/system/docker.service.d/http-proxy.conf
+
+  - name: Habilitando e iniciando serviço Docker
+    systemd:
+      name: docker
+      state: started
+      enabled: yes
+      daemon_reload: yes
+  - name: Criando Volume Group vg_rancher
+    lvg:
+      vg: vg_rancher
+      pvs: /dev/sdb
+
+  - name: Cria o LV vg_rancher para o rancher
+    lvol:
+      vg: vg_rancher
+      lv: lv_rancher
+      size: 100%FREE
+      pvs: /dev/sdb
+    ignore_errors: yes
+
+  - name: Carregando os modulos
+    shell: |
+           modprobe overlay
+           modprobe br_netfilter
+
+
+  - name: Criando arquivo para parametrizar o kernel para uso do Docker
+    file:
+      path: "/etc/sysctl.d/docker.conf"
+      state: "touch"
+
+  - name: Ajustando parametros do kernel para o Docker
+    blockinfile:
+      path: "/etc/sysctl.d/docker.conf"
+      block: |
+              net.bridge.bridge-nf-call-iptables=1
+              net.ipv4.ip_forward = 1
+              net.bridge.bridge-nf-call-ip6tables = 1
+
+  - name: Aplicando parametros de kernel
+    command: sysctl --system
+
+
+  - name: Formatando o volume /dev/vg_rancher/lv_rancher
+    filesystem:
+      fstype: xfs
+      dev: /dev/vg_rancher/lv_rancher
+
+  - name: Criando diretorio {{ rancher_path }}
+    file:
+      path: "{{ rancher_path }}"
+      state: directory
+
+  - name: Montando o volume em {{ rancher_path }}
+    mount:
+      src: /dev/vg_rancher/lv_rancher
+      path: "{{ rancher_path }}"
+      fstype: xfs
+      state: mounted
+  - name: Iniciando o Rancher
+    shell: docker run -d --restart=unless-stopped  -p 80:80 -p 443:443 --network host -e HTTP_PROXY="{{ http_proxy }}" -e HTTPS_PROXY="{{ http_proxy }}" -e NO_PROXY="localhost,0.0.0.0,127.0.0.1,10.0.0.0/8,172.16.0.0/16.{{ domain }}.svc,cluster.local,cattle-system.svc"   --privileged --name rancher -v {{ rancher_path }}:/var/lib/rancher  --privileged rancher/rancher:{{ rancher_version | default('latest') }}
+
+  - name: Aguarde...
+    pause:
+      seconds: 100
+      prompt: Aguarde o Rancher ficar disponivel
+  - name: Coletando password do admin Rancher
+    shell: docker logs rancher 2>&1  2>&1 | grep "to complete setup in the UI"| cut -d " " -f5
+    register: cred
+
+  - name: Acesse a UI para acessar o Rancher
+    debug:
+      msg: "{{ cred.stdout_lines }}"
+
+  - name: Coletando credencial para importação de cluster
+    shell:  echo "{{ cred.stdout_lines }}" | cut -d "=" -f2 | cut -d "," -f1 | cut -d "'" -f1
+    register: rancher_token
+  - debug: var=rancher_token.stdout
+
+  - set_fact: rancher_token="{{ rancher_token.stdout }}"
+
+
+  - name: Copiando arquivo de template
+    template:
+      src: ../templates/import-cluster-rancher.sh.j2
+      dest: /tmp/import
+
+  - name: Aguarde um momento
+    pause:
+      seconds: 30
+
+  - name: Importando o cluster
+    shell: sh  -x /tmp/import 2> /tmp/import.log
+    register: import_k8s
+  - debug: var=import_k8s.stdout
+
+  - set_fact: import_k8s="{{ import_k8s.stdout }}"
+  - name: Copiando Join para tmp local
+    local_action: copy content="{{ import_k8s }}" dest="/tmp/import_k8s" mode=0777
+
+- name: Executando importação do cluster no Rancher
+  hosts: master
+  become: yes
+  gather_facts: yes
+  tasks:
+   - name: Copia o comando de importação para o mater {{ inventory_hostname }}
+     copy:
+       src: /tmp/import_k8s
+       dest: /tmp/import_k8s
+       mode: 0777
+
+   - name: Criando agente do Rancher no cluster
+     become: yes
+     command: sh /tmp/import_k8s
+     run_once: yes
+     register: joined_or_not
+   - name:
+     debug:
+       msg: "{{ joined_or_not.stdout }}"
+
+
+
+
+
+
+...

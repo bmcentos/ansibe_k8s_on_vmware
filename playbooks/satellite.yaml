@@ -1,0 +1,19 @@
+- name: Registrando servidores no satellite
+  hosts: all
+  vars_files:
+    - ../vars/vars_file.yaml
+  become: yes
+  tasks:
+    - name: Registra servidor no satellite - {{ inventory_hostname }}
+      shell: "{{ item }}"
+      loop:
+        - curl -sS {{ satellite_rhsm }} | tee /etc/rhsm/rhsm.conf
+        - subscription-manager register --org="{{ satellite_org }}" --activationkey="{{ satellite_key }}" --force
+        - subscription-manager repos --enable '*'
+        - subscription-manager release --set 8
+        - subscription-manager subscribe --auto
+        - subscription-manager attach --auto
+      async: 1000
+      when:  satellite_enabled| lower  == "yes" or satellite_enabled| lower  == "true"
+
+

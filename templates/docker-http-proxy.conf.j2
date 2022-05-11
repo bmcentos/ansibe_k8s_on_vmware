@@ -1,0 +1,5 @@
+[Service]
+Environment="http_proxy={{ http_proxy }}"
+Environment="https_proxy={{ http_proxy }}"
+Environment="no_proxy={{ registry }},10.0.0.0/8,127.0.0.1,localhost,.{{ domain }}"
+

@@ -1,21 +1,52 @@
-####Definições VM
-vcenter_hostname: vcentername
-username: vcenter_user
-folder: vm/ 
-vmtemplate: TEMPLATE_CENTOS
-vmcluster: CLUSTER_VMWARE
-net_name: PORTGROUP
-vm_gw: 192.168.0.1
-datacenter: DC_CLUSTER
-vram: 8000 #qtd. memoria da vm Em MB
-vcpus: 4 
-gb_disk: 10 #Tamanho em GB do disco secundario adicionado
+####vCenter##################################
+vcenter_hostname: <vcenter_host>
+username: <vcenter_user>
+folder: <vm_folder>
+vmtemplate: <vcenter_rhel/centos template>
+vmcluster: <vcenter_clustr>
+net_name: <portgroup_cluster>
+vm_gw: <vm_gateway>
+datacenter: <vcenter_datacenter>
+vram: 8000 #Em MB
+vcpus: 4
+#############################################
 
 
-####Definições K8s
-version: 1.21.11 #Versão do kubernetes
-cri_version: 1.6.2    #Versão do containerd
-http_proxy: http://proxy.example.com
-ip_range:  192.168.0.15-192.168.0.20              #Range de ips que ficarão disponiveis para uso externo )LB)
-registry: internal-registry.example.com                #Registro de imagem
+####K8s#######################################
+longhorn_gb_disk: 10    # montado em /var/lib/longhorn
+containerd_gb_disk: 20  # montado em /var/lib/containerd
+version: 1.21.11
+cri_version: 1.6.2    #Containerd Version
+ip_range:  <192.168.0.5-192.168.0.10>              #EX: 10.215.201.160-10.215.201.170
+registry: <private-registry>                #Registro de imagem
+cluster_name: <k8s_cluster_name>
+###############################################
 
+###Rancher####################################
+rancher_admin_pass: <rancher_admin_pass>
+rancher_vram: 4000
+rancher_vcpus: 4
+rancher_gb_disk: 20
+rancher_version: v2.6.3
+rancher_path: /var/lib/docker/rancher
+#############################################
+
+###Load Balancer#############################
+lb_enabled: yes    #Trabalhando com multi master, habilitando HAPROXY
+lb_vip: <load_balancer_vip_IP> #Usado para o API Server
+lb_vram: 8000 #Em MB
+lb_vcpus: 4
+############################################
+#
+###Global###################################
+http_proxy: <seu_proxy>
+domain: <example.com>
+###########################################
+#
+###Subscrição RedHat#######################
+satellite_enabled: no   #Caso esteja usando Red Hat, habilite
+satellite_release: 8.5  #Release do rhel/centos
+satellite_org: <sua_organização_satellite>
+satellite_key: <sua_chave_deAtivação> 
+satellite_rhsm: http://satellite/pub/rhsm.conf  #Copiar seu rhsm.conf para um endpoint http
+###########################################

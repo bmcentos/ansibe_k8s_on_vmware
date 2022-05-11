@@ -1,0 +1,46 @@
+#!/bin/bash
+
+#Variaveis 
+CRED=`docker logs rancher 2>&1  2>&1 | grep "to complete setup in the UI"| cut -d " " -f5`
+ADMIN_PASS=`echo "$CRED" | cut -d "=" -f2 | cut -d "," -f1 | cut -d "'" -f1`
+NEW_ADMIN_PASS={{ rancher_admin_pass }}
+K8S_CLUSTER={{ cluster_name }}
+
+
+LOGINRESPONSE=`curl -s 'https://127.0.0.1/v3-public/localProviders/local?action=login' -H 'content-type: application/json' --data-binary '{"username":"admin","password":"'$ADMIN_PASS'"}' --insecure`
+LOGINTOKEN=`echo $LOGINRESPONSE | jq -r .token`
+
+# Change password
+curl -s 'https://127.0.0.1/v3/users?action=changepassword' -H 'content-type: application/json' -H "Authorization: Bearer $LOGINTOKEN" --data-binary '{"currentPassword":"'$ADMIN_PASS'","newPassword":"'$NEW_ADMIN_PASS'"}' --insecure > /dev/null
+
+#Login com nova password
+LOGINRESPONSE=`curl -s 'https://127.0.0.1/v3-public/localProviders/local?action=login' -H 'content-type: application/json' --data-binary '{"username":"admin","password":"'$NEW_ADMIN_PASS'"}' --insecure`
+LOGINTOKEN=`echo $LOGINRESPONSE | jq -r .token`
+
+# Create API key
+APIRESPONSE=`curl -s 'https://127.0.0.1/v3/token' -H 'content-type: application/json' -H "Authorization: Bearer $LOGINTOKEN" --data-binary '{"type":"token","description":"automation"}' --insecure`
+# Extract and store token
+APITOKEN=`echo $APIRESPONSE | jq -r .token`
+
+# Configure server-url
+RANCHER_SERVER="https://`hostname -i`"
+curl -s 'https://127.0.0.1/v3/settings/server-url' -H 'content-type: application/json' -H "Authorization: Bearer $APITOKEN" -X PUT --data-binary '{"name":"server-url","value":"'$RANCHER_SERVER'"}' --insecure > /dev/null
+
+#Criação do cluster k8s (Type: subscribe - import )
+#CLUSTERRESPONSE=`curl -s 'https://127.0.0.1/v3/cluster' -H 'content-type: application/json' -H "Authorization: Bearer $APITOKEN" --data-binary '{"type":"subscribe","nodes":[],"rancherKubernetesEngineConfig":{"ignoreDockerVersion":true},"name":"'$K8S_CLUSTER'"}' --insecure`
+
+CLUSTERRESPONSE=`curl -s 'https://127.0.0.1/v3/cluster' -H 'content-type: application/json' -H "Authorization: Bearer $APITOKEN" --data-binary '{"type":"Imported","name":"'$K8S_CLUSTER'"}' --insecure`
+
+
+#Id do cluster no Rancher
+CLUSTERID=`echo $CLUSTERRESPONSE | jq -r .id`
+
+#Comando kubectl para importação do cluster
+sleep 2
+curl -s -k 'https://127.0.0.1/v3/clusterregistrationtokens?id='$K8S_CLUSTER'&sort=insecureCommand' -H "Authorization: Bearer $APITOKEN"  -H "Authorization: Bearer $APITOKEN" | sed 's/.*insecureCommand//g'| cut -d "," -f1| cut -d ":" -f2,3| tr -d \"
+
+
+
+
+
+

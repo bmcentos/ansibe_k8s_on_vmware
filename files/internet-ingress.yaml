@@ -1,0 +1,431 @@
+apiVersion: v1
+kind: Namespace
+metadata:
+  creationTimestamp: null
+  name: internet-ingress
+spec: {}
+status: {}
+---
+kind: Service
+apiVersion: v1
+metadata:
+metadata:
+  annotations:
+    service.beta.kubernetes.io/aws-load-balancer-backend-protocol: tcp
+    service.beta.kubernetes.io/aws-load-balancer-cross-zone-load-balancing-enabled: "true"
+    service.beta.kubernetes.io/aws-load-balancer-type: nlb
+  name: internet-ingress
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+spec:
+  externalTrafficPolicy: Cluster
+  type: LoadBalancer
+  selector:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+  ports:
+  - name: https
+    port: 443
+    protocol: TCP
+    targetPort: https
+  - name: http
+    port: 80
+    protocol: TCP
+    targetPort: 80
+
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: default-http-backend-internal-internal
+  labels:
+    app.kubernetes.io/name: default-http-backend-internal-internal
+    app.kubernetes.io/part-of: internet-ingress
+  namespace: internet-ingress
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: default-http-backend-internal
+      app.kubernetes.io/part-of: internet-ingress
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: default-http-backend-internal
+        app.kubernetes.io/part-of: internet-ingress
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+      - name: default-http-backend-internal
+        # Any image is permissible as long as:
+        # 1. It serves a 404 page at /
+        # 2. It serves 200 on a /healthz endpoint
+        image: gcr.io/google_containers/defaultbackend:1.4
+        livenessProbe:
+          httpGet:
+            path: /healthz
+            port: 8080
+            scheme: HTTP
+          initialDelaySeconds: 30
+          timeoutSeconds: 5
+        ports:
+        - containerPort: 8080
+        resources:
+          limits:
+            cpu: 100m
+            memory: 200Mi
+          requests:
+            cpu: 100m
+            memory: 200Mi
+---
+
+apiVersion: v1
+kind: Service
+metadata:
+  name: default-http-backend-internal
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: default-http-backend-internal
+    app.kubernetes.io/part-of: internet-ingress
+spec:
+  ports:
+  - port: 80
+    targetPort: 8080
+  selector:
+    app.kubernetes.io/name: default-http-backend-internal
+    app.kubernetes.io/part-of: internet-ingress
+---
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: internet-ingress-configuration
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+data:
+  allow-snippet-annotations: "true"
+  compute-full-forwarded-for: "true"
+  enable-real-ip: "true"
+  enable-underscores-in-headers: "true"
+  force-ssl-redirect: "false"
+  http-snippet: |
+    server {
+      listen 8080;
+      server_tokens off;
+    }
+  proxy-add-original-uri-header: "true"
+  proxy-body-size: 5m
+  proxy-connect-timeout: "300"
+  proxy-read-timeout: "600"
+  proxy-real-ip-cidr: 10.0.0.0/8
+  proxy-send-timeout: "600"
+  real-ip-header: proxy_protocol
+  server-name-hash-bucket-size: "512"
+  server-tokens: "False"
+  use-forwarded-headers: "true"
+  use-proxy-protocol: "false"
+
+
+---
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: tcp-services
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+---
+
+kind: ConfigMap
+apiVersion: v1
+metadata:
+  name: udp-services
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+---
+
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: internet-ingress-serviceaccount
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: internet-ingress-clusterrole
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - endpoints
+      - nodes
+      - pods
+      - secrets
+    verbs:
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+      - nodes
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - services
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - "extensions"
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - ""
+    resources:
+        - events
+    verbs:
+        - create
+        - patch
+  - apiGroups:
+      - "extensions"
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingressclasses
+    verbs:
+      - get
+      - list
+      - watch
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: internet-ingress-role
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+rules:
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+      - pods
+      - secrets
+      - namespaces
+    verbs:
+      - get
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    resourceNames:
+      # Defaults to "<election-id>-<ingress-class>"
+      # Here: "<ingress-controller-leader>-<nginx>"
+      # This has to be adapted if you change either parameter
+      # when launching the nginx-ingress-controller.
+      - "ingress-controller-leader-knginx"
+    verbs:
+      - get
+      - update
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - configmaps
+    verbs:
+      - create
+  - apiGroups:
+      - ""
+    resources:
+      - endpoints
+    verbs:
+      - get
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses
+    verbs:
+      - get
+      - list
+      - watch
+  - apiGroups:
+      - extensions
+      - networking.k8s.io
+    resources:
+      - ingresses/status
+    verbs:
+      - update
+  - apiGroups:
+      - networking.k8s.io
+    resources:
+      - ingressclasses
+    verbs:
+      - get
+      - list
+      - watch
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: internet-ingress-role-nisa-binding
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: internet-ingress-role
+subjects:
+  - kind: ServiceAccount
+    name: internet-ingress-serviceaccount
+    namespace: internet-ingress
+
+---
+
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: internet-ingress-clusterrole-nisa-binding
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: internet-ingress-clusterrole
+subjects:
+  - kind: ServiceAccount
+    name: internet-ingress-serviceaccount
+    namespace: internet-ingress
+---
+
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: internet-ingress-controller
+  namespace: internet-ingress
+  labels:
+    app.kubernetes.io/name: internet-ingress
+    app.kubernetes.io/part-of: internet-ingress
+spec:
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: internet-ingress
+      app.kubernetes.io/part-of: internet-ingress
+  template:
+    metadata:
+      labels:
+        app.kubernetes.io/name: internet-ingress
+        app.kubernetes.io/part-of: internet-ingress
+      annotations:
+        prometheus.io/port: '10254'
+        prometheus.io/scrape: 'true'
+    spec:
+      serviceAccountName: internet-ingress-serviceaccount
+      containers:
+        - name: internet-ingress-controller
+          image: quay.io/kubernetes-ingress-controller/nginx-ingress-controller:0.32.0
+          args:
+            - /nginx-ingress-controller
+            - --ingress-class=knginx
+            - --default-backend-service=$(POD_NAMESPACE)/default-http-backend-internal
+            - --configmap=$(POD_NAMESPACE)/internet-ingress-configuration
+            - --tcp-services-configmap=$(POD_NAMESPACE)/tcp-services
+            - --udp-services-configmap=$(POD_NAMESPACE)/udp-services
+            - --publish-service=$(POD_NAMESPACE)/internet-ingress
+            - --annotations-prefix=nginx.ingress.kubernetes.io
+            - --default-ssl-certificate=default/tls-secret
+            - --ingress-class=knginx
+          securityContext:
+            privileged: false
+            allowPrivilegeEscalation: true
+            runAsNonRoot: true
+            capabilities:
+                drop:
+                - ALL
+                add:
+                - NET_BIND_SERVICE
+            # www-data -> 33
+            runAsUser: 101
+          env:
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: POD_NAMESPACE
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.namespace
+          ports:
+          - name: https
+            containerPort: 443
+          livenessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            initialDelaySeconds: 10
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+          readinessProbe:
+            failureThreshold: 3
+            httpGet:
+              path: /healthz
+              port: 10254
+              scheme: HTTP
+            periodSeconds: 10
+            successThreshold: 1
+            timeoutSeconds: 1
+

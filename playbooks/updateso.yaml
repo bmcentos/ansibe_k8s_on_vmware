@@ -1,0 +1,39 @@
+- hosts: stack
+  become: yes
+  tasks:
+    - name: Atualizando patches de segurança nos servidores
+      yum:
+        name: '*'
+        state: latest
+        security: yes
+        exclude: kube*
+
+    - name: Verificando se é necessario o reboot nos servidores
+      command: needs-restarting -r
+      register: result
+      ignore_errors: yes
+
+    - name: Verificando se reboot é necessario
+      debug:
+        var: result.rc
+
+
+    - name: Reiniciando o sistema
+      reboot:
+        test_command: uptime
+      when: result.rc == 1
+      register: shut
+
+
+    - name: Pausando a task para aguardar o sistema reiniciar
+      pause: seconds=30
+      when: result.rc == 1
+
+    - name: Aguardando o ssh ficar disponivel
+      local_action: wait_for host={{ inventory_hostname }} port=22
+        state=started delay=30 timeout=600
+      retries: 30
+      delay: 10
+      when: result.rc == 127
+
+

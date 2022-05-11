@@ -1,0 +1,83 @@
+---
+- name: Criando servidores no vCenter
+  become: yes
+  hosts: localhost
+  gather_facts: false
+  vars_prompt:
+    - name: password
+      prompt: '#############[+] {{ username }} - Digite a senha do usuario do vCenter#############'
+  vars_files: 
+    - vars/vars_file.yaml
+  tasks: 
+    #Exporta variavel informada no prompt para outros playbooks
+    - set_fact:
+        password: "{{ password }}"
+
+#Criando servidores Kubernetes
+- import_playbook: playbooks/k8s.yaml
+  #Importando variavel password
+  vars:
+    password: "{{ hostvars['localhost']['password'] }}"
+
+#Instala e transfere arquivos necessarios para o cluster Kubernetes
+- import_playbook: playbooks/cluster.yaml
+#Criando Load Balancer para os Masters
+- import_playbook: playbooks/haproxy.yaml
+  #Importando variavel password
+  vars:
+    password: "{{ hostvars['localhost']['password'] }}"
+  when:  lb_enabled |lower  == "yes" or lb_enabled| lower  == "true"
+
+#Inicia o cluster
+- import_playbook: playbooks/master.yaml
+#Faz o join dos nodes workers
+- import_playbook: playbooks/worker.yaml
+
+- name: Checa se o cluster esta disponivel
+  hosts: master
+  become: yes
+  tasks:
+    - name: Aguanda o cluster ficar disponivel 
+      pause:
+        seconds: 60
+        prompt: Aguarde o cluster iniciar...
+      delegate_to: localhost
+
+    - name: Verificando estado do cluster
+      shell: kubectl get node
+      register: status
+
+    - name: Cluster iniciado com sucesso
+      debug: 
+        msg: "{{ status.stdout_lines }}"
+
+#Iniciando deploy do Rancher
+- import_playbook: playbooks/rancher.yaml
+  #Importando variavel password
+  vars:
+    password: "{{ hostvars['localhost']['password'] }}"
+
+#Faz o update dos servidores e reinicia
+- import_playbook: playbooks/updateso.yaml
+
+##### 
+- name: Deploy realizado com sucesso
+  hosts: rancher
+  vars_files:
+    - vars/vars_file.yaml
+
+  tasks:
+     - name: Acesse o Rancher para iniciar a configuração
+       debug:
+          msg:
+            - 'Usuario: admin'
+            - 'Pass: {{ rancher_admin_pass }}'
+            - 'URL https://{{ ansible_host }}'
+     - name: Proximos passos
+       debug:
+         msg:
+           - 'Acesse a UI do rancher e instale o LongHorn no cluster {{ cluster_name }}'
+           - 'Caso queira, configure autenticação LDAP'
+           - '########################################'
+           - '[+] Final da instalação'
+
